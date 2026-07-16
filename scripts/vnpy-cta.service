@@ -1,0 +1,18 @@
+[Unit]
+Description=vnpy CTA Live Trading System
+After=network.target
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin/Desktop/vnpy_cta
+Environment=PATH=/home/admin/Desktop/vnpy_cta/.venv/bin:/usr/bin:/bin
+ExecStart=/home/admin/Desktop/vnpy_cta/.venv/bin/python3.13 /home/admin/Desktop/vnpy_cta/run_headless.py
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/home/admin/Desktop/vnpy_cta/logs/cta.log
+StandardError=append:/home/admin/Desktop/vnpy_cta/logs/cta.log
+
+[Install]
+WantedBy=multi-user.target

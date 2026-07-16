@@ -1,0 +1,12 @@
+{
+  "strategies": [
+    {
+      "class_name": "<StrategyClassName>",
+      "strategy_name": "<unique_instance_name>",
+      "vt_symbol": "<code>.<EXCHANGE>",
+      "setting": {
+        "<param>": "<value>"
+      }
+    }
+  ]
+}
