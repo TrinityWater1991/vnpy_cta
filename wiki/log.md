@@ -16,6 +16,17 @@ updated: 2026-07-16
 
 ---
 
+## [2026-07-18] ingest | 学习 vnpy 官方 no_ui/run.py 并重构项目
+
+参考 [官方 examples/no_ui/run.py](https://github.com/vnpy/vnpy/blob/master/examples/no_ui/run.py) 重构系统：
+
+- `run_headless.py` 重写：采用官方 `init_engine()` → `init_all_strategies()` → `sleep(60)` → `start_all_strategies()` 启动序列
+- 添加 `LogEngine` + `EVENT_CTA_LOG` 事件注册，实现结构化日志
+- 网关改为动态加载（占位 Bitget，待开发完成后接入）
+- 修复策略类注册问题：`init_engine()` 内部 `load_strategy_class()` 扫描策略模块并填充 `self.classes`，不调用则 `add_strategy()` 找不到类
+- 移除 `dual_ma.py`（依赖 matplotlib，非实盘策略）
+- 更新 [[architecture]]：补充初始化流程序列图、进程管理分层、数据流
+
 ## [2026-07-16] ingest | 创建部署分类全套页面
 
 填充 6 篇部署类 WIKI 页面的详细内容：
