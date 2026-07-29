@@ -1,0 +1,16 @@
+# vnpy CTA 实盘系统 — 官方依赖清单
+# 基于 vnpy/vnpy_ctastrategy/vnpy_datamanager 的 pyproject.toml
+
+# 核心框架
+vnpy>=4.4.0
+vnpy_ctastrategy>=1.4.1
+vnpy_datamanager>=1.2.0
+vnpy_sqlite
+
+# vnpy_bitget 依赖
+vnpy_rest
+vnpy_websocket
+numpy
+
+# 数据服务（可选，按需启用）
+# vnpy_rqdata

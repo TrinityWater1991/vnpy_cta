@@ -6,6 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 vnpy_cta is a headless production deployment of [VeighNa (vnpy) 4.4.0](https://github.com/vnpy/vnpy) CTA futures trading strategies. It runs on Python 3.13 and targets a VPS at `47.237.121.19`. The vnpy framework (`vnpy`, `vnpy_ctastrategy`, etc.) is installed via pip — this repo contains only custom strategies, configuration, and ops tooling.
 
+**Python version: 3.13 only.** Official vnpy supports 3.10–3.13, but this project is locked to 3.13. All commands, venvs, and deployments MUST use `python3.13`.
+
+## Environment setup
+
+```bash
+# Create venv (first time)
+python3.13 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# Verify
+python3.13 -c "from vnpy.event import EventEngine; from vnpy_ctastrategy import CtaStrategyApp; from vnpy_bitget import BitgetLinearGateway; print('OK')"
+```
+
 ## Commands
 
 There is no build step, no linter, and no test suite.
@@ -117,10 +131,25 @@ Three core operations the LLM is expected to perform:
 
 All pages use YAML frontmatter (`title`, `category`, `tags`, `created`, `updated`) for Dataview compatibility, and `[[wikilink]]` syntax for cross-references. Content is in Chinese.
 
+## Deployment workflow
+
+All code follows a three-stage pipeline:
+
+```
+本地开发 → GitHub 仓库 → VPS 部署
+  ①           ②            ③
+```
+
+1. **本地编排开发** — 所有代码在本项目（`vnpy_cta`）内编写、测试、验证
+2. **同步到 GitHub** — 代码确认无误后 `git commit` + `git push` 到远程仓库
+3. **VPS 部署** — 从 GitHub `git pull` 拉取最新代码，`systemctl restart vnpy-cta` 重启服务
+
+禁止跳过前两步直接操作 VPS。
+
 ## Deployment context
 
 - **Target**: Python 3.13, vnpy 4.4.0, Ubuntu VPS
-- **Full dependency list**: [`requirements_freezed.txt`](requirements_freezed.txt) (334 pinned packages). Deploy to a new VPS with `pip install -r requirements_freezed.txt` to exactly replicate the local Python 3.13 environment. Do not edit manually — after any env change, regenerate with `pip freeze > requirements_freezed.txt`.
+- **Full dependency list**: [`requirements.txt`](requirements.txt) — based on official vnpy/vnpy_ctastrategy/vnpy_datamanager pyproject.toml (~50 resolved packages, down from 334). Install on a new VPS with `pip install -r requirements.txt`.
 - **Key packages**: `vnpy`, `vnpy_ctastrategy`, `vnpy_ctabacktester`, `vnpy_datamanager`, `vnpy_rqdata`, `vnpy_sqlite`
 - **Runtime directories** (gitignored): `.vntrader/` (vnpy runtime + SQLite DB), `logs/` (application logs)
 - **Sensitive files** (gitignored): `configs/vt_setting.json` (CTP credentials)

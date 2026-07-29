@@ -3,7 +3,7 @@ title: "系统架构"
 category: "reference"
 tags: [architecture, components, data-flow]
 created: 2026-07-16
-updated: 2026-07-18
+updated: 2026-07-23
 ---
 
 # 系统架构
@@ -14,7 +14,7 @@ updated: 2026-07-18
 
 ```
 systemd (vnpy-cta.service)
-  └── run_headless.py (Python 3.13)
+  └── run.py (Python 3.13)
         ├── EventEngine        — 事件驱动核心
         ├── MainEngine         — 主引擎，管理所有模块
         │     ├── CtaStrategyApp  → CtaEngine  — CTA 策略引擎
@@ -84,7 +84,7 @@ systemd (vnpy-cta.service)
 | 层级 | 工具 | 职责 |
 |------|------|------|
 | systemd | `vnpy-cta.service` | 开机自启、崩溃重启 (`Restart=on-failure`, `RestartSec=10`) |
-| run_headless.py | SIGTERM handler | 优雅退出：`main_engine.close()` → 释放交易所会话 |
+| run.py | SIGTERM handler | 优雅退出：`main_engine.close()` → 释放交易所会话 |
 
 ## 部署位置
 
