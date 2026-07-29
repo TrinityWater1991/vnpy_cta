@@ -1,8 +1,13 @@
 """
-Bitget USDT-margined (linear) futures gateway for VeighNa.
+Bitget USDT-margined linear futures gateway for VeighNa — API v3 UTA.
+
+Bitget Unified Trading Account (UTA) 使用 API v3：
+- REST: https://api.bitget.com/api/v3/*
+- WS Public: wss://ws.bitget.com/v3/ws/public
+- WS Private: wss://ws.bitget.com/v3/ws/private
 
 References:
-- Bitget API v2: https://www.bitget.com/api-doc/common/intro
+- Bitget API v3 UTA: https://www.bitget.com/api-doc/uta/intro
 - vnpy_binance linear_gateway.py (reference implementation)
 """
 import base64
@@ -53,17 +58,15 @@ UTC_TZ = ZoneInfo("UTC")
 # REST 地址
 REAL_REST_HOST: str = "https://api.bitget.com"
 
-# WebSocket 地址
-REAL_PUBLIC_HOST: str = "wss://ws.bitget.com/v2/ws/public"
-REAL_PRIVATE_HOST: str = "wss://ws.bitget.com/v2/ws/private"
+# WebSocket 地址 (v3)
+REAL_PUBLIC_HOST: str = "wss://ws.bitget.com/v3/ws/public"
+REAL_PRIVATE_HOST: str = "wss://ws.bitget.com/v3/ws/private"
 
-# WebSocket 超时
 WEBSOCKET_TIMEOUT = 24 * 60 * 60
 
-# 产品类型: USDT-margined perpetual (linear)
-PRODUCT_TYPE: str = "umcbl"  # "USDT perpetual"
+CATEGORY: str = "USDT-FUTURES"
 
-# 订单状态映射 Bitget → vnpy
+# 订单状态映射
 STATUS_BITGET2VT: dict[str, Status] = {
     "not_activated": Status.NOTTRADED,
     "new": Status.NOTTRADED,
@@ -72,10 +75,10 @@ STATUS_BITGET2VT: dict[str, Status] = {
     "cancelled": Status.CANCELLED,
 }
 
-# 订单类型映射 vnpy → Bitget
+# 订单类型映射
 ORDERTYPE_VT2BITGET: dict[OrderType, tuple[str, str]] = {
-    OrderType.LIMIT: ("limit", "normal"),
-    OrderType.MARKET: ("market", "normal"),
+    OrderType.LIMIT: ("limit", "gtc"),
+    OrderType.MARKET: ("market", "gtc"),
     OrderType.FAK: ("limit", "fok"),
     OrderType.FOK: ("limit", "fok"),
 }
@@ -98,11 +101,7 @@ INTERVAL_VT2BITGET: dict[Interval, str] = {
     Interval.HOUR: "1H",
     Interval.DAILY: "1D",
 }
-INTERVAL_BITGET2VT: dict[str, Interval] = {
-    v: k for k, v in INTERVAL_VT2BITGET.items()
-}
 
-# K 线时间增量
 TIMEDELTA_MAP: dict[Interval, timedelta] = {
     Interval.MINUTE: timedelta(minutes=1),
     Interval.HOUR: timedelta(hours=1),
@@ -113,12 +112,7 @@ TIMEDELTA_MAP: dict[Interval, timedelta] = {
 # ── BitgetLinearGateway ────────────────────────────────
 
 class BitgetLinearGateway(BaseGateway):
-    """
-    Bitget U 本位合约网关。
-
-    支持 USDT 保证金永续合约（UMCBL）。
-    单向持仓模式，净头寸。
-    """
+    """Bitget U 本位合约网关 (API v3 UTA)。"""
 
     default_name: str = "BITGET_LINEAR"
 
@@ -127,132 +121,95 @@ class BitgetLinearGateway(BaseGateway):
         "API Secret": "",
         "API Passphrase": "",
         "Server": ["REAL"],
-        "Proxy Host": "",
-        "Proxy Port": 0,
+        "Proxy Host": "127.0.0.1",
+        "Proxy Port": 1081,
     }
 
-    exchanges: list[Exchange] = [Exchange.GLOBAL]
+    exchanges: list[Exchange] = [Exchange.BITGET]
 
     def __init__(self, event_engine: EventEngine, gateway_name: str) -> None:
-        """初始化网关。"""
         super().__init__(event_engine, gateway_name)
-
         self.rest_api: RestApi = RestApi(self)
         self.md_api: MdApi = MdApi(self)
         self.trade_api: TradeApi = TradeApi(self)
-
         self.orders: dict[str, OrderData] = {}
         self.symbol_contract_map: dict[str, ContractData] = {}
         self.name_contract_map: dict[str, ContractData] = {}
 
     def connect(self, setting: dict) -> None:
-        """连接交易所。"""
         key: str = setting["API Key"]
         secret: str = setting["API Secret"]
         passphrase: str = setting["API Passphrase"]
         server: str = setting["Server"]
-        proxy_host: str = setting["Proxy Host"]
-        proxy_port: int = setting["Proxy Port"]
+        proxy_host: str = setting.get("Proxy Host") or self.default_setting["Proxy Host"]
+        proxy_port: int = setting.get("Proxy Port") or self.default_setting["Proxy Port"]
 
-        self.rest_api.connect(
-            key, secret, passphrase, server, proxy_host, proxy_port
-        )
-        self.trade_api.connect(
-            key, secret, passphrase, server, proxy_host, proxy_port
-        )
+        self.rest_api.connect(key, secret, passphrase, server, proxy_host, proxy_port)
+        self.trade_api.connect(key, secret, passphrase, server, proxy_host, proxy_port)
         self.md_api.connect(server, proxy_host, proxy_port)
-
         self.event_engine.register(EVENT_TIMER, self.process_timer_event)
 
     def subscribe(self, req: SubscribeRequest) -> None:
-        """订阅行情。"""
         self.md_api.subscribe(req)
 
     def send_order(self, req: OrderRequest) -> str:
-        """发送委托。"""
         return self.trade_api.send_order(req)
 
     def cancel_order(self, req: CancelRequest) -> None:
-        """撤销委托。"""
         self.trade_api.cancel_order(req)
 
     def query_account(self) -> None:
-        """查询账户（WebSocket 推送更新）。"""
         pass
 
     def query_position(self) -> None:
-        """查询持仓（WebSocket 推送更新）。"""
         pass
 
     def query_history(self, req: HistoryRequest) -> list[BarData]:
-        """查询历史 K 线。"""
         return self.rest_api.query_history(req)
 
     def close(self) -> None:
-        """关闭连接。"""
         self.rest_api.stop()
         self.md_api.stop()
         self.trade_api.stop()
 
     def on_order(self, order: OrderData) -> None:
-        """保存委托副本并推送。"""
         self.orders[order.orderid] = copy(order)
         super().on_order(order)
 
     def get_order(self, orderid: str) -> OrderData | None:
-        """按 orderid 获取委托。"""
         return self.orders.get(orderid, None)
 
     def on_contract(self, contract: ContractData) -> None:
-        """保存合约映射并推送。"""
         self.symbol_contract_map[contract.symbol] = contract
         self.name_contract_map[contract.name] = contract
         super().on_contract(contract)
 
     def get_contract_by_symbol(self, symbol: str) -> ContractData | None:
-        """按 vnpy symbol 获取合约。"""
         return self.symbol_contract_map.get(symbol, None)
 
     def get_contract_by_name(self, name: str) -> ContractData | None:
-        """按交易所原始名称获取合约。"""
         return self.name_contract_map.get(name, None)
 
     def process_timer_event(self, event: Event) -> None:
-        """定时任务：订阅新频道。"""
         self.md_api.subscribe_new_channels()
 
 
 # ── RestApi ─────────────────────────────────────────────
 
 class RestApi(RestClient):
-    """Bitget U 本位合约 REST API 客户端。"""
+    """Bitget REST API v3 客户端。"""
 
     def __init__(self, gateway: BitgetLinearGateway) -> None:
-        """初始化。"""
         super().__init__()
-
         self.gateway: BitgetLinearGateway = gateway
         self.gateway_name: str = gateway.gateway_name
-
         self.key: str = ""
         self.secret: str = ""
         self.passphrase: str = ""
-
-        self.order_count: int = 1_000_000
         self.order_prefix: str = ""
-        self.server: str = ""
 
     def sign(self, request: Request) -> Request:
-        """
-        Bitget API v2 签名。
-
-        签名算法:
-            prehash = timestamp + method + requestPath + body
-            signature = Base64(HMAC-SHA256(secret, prehash))
-
-        Headers:
-            ACCESS-KEY, ACCESS-SIGN, ACCESS-TIMESTAMP, ACCESS-PASSPHRASE
-        """
+        """Bitget API v3 签名。"""
         if request.data and request.data.get("signed", False):
             timestamp: str = str(int(time.time() * 1000))
             method: str = request.method
@@ -270,7 +227,6 @@ class RestApi(RestClient):
                 request.data = body
 
             prehash: str = timestamp + method + request_path + body
-
             signature: str = base64.b64encode(
                 hmac.new(
                     self.secret.encode("utf-8"),
@@ -278,6 +234,9 @@ class RestApi(RestClient):
                     hashlib.sha256,
                 ).digest()
             ).decode("utf-8")
+
+            # 签名完成后清除 data，避免 {"signed": True} 被当作 HTTP body 发送
+            request.data = {}
 
             request.headers = {
                 "Content-Type": "application/json",
@@ -292,78 +251,48 @@ class RestApi(RestClient):
                 "Content-Type": "application/json",
                 "locale": "en-US",
             }
-
         return request
 
     def connect(
-        self,
-        key: str,
-        secret: str,
-        passphrase: str,
-        server: str,
-        proxy_host: str,
-        proxy_port: int,
+        self, key: str, secret: str, passphrase: str,
+        server: str, proxy_host: str, proxy_port: int,
     ) -> None:
-        """建立 REST 连接。"""
         self.key = key
         self.secret = secret
         self.passphrase = passphrase
         self.proxy_port = proxy_port
         self.proxy_host = proxy_host
-        self.server = server
-
         self.order_prefix = datetime.now().strftime("%y%m%d%H%M%S")
         self.init(REAL_REST_HOST, proxy_host, proxy_port)
         self.start()
-
         self.gateway.write_log("REST API started")
         self.query_time()
 
+    # ── v3 public endpoints ──────────────────────────────
+
     def query_time(self) -> None:
-        """查询服务器时间。"""
-        self.add_request(
-            "GET",
-            "/api/v2/public/time",
-            callback=self.on_query_time,
-        )
+        self.add_request("GET", "/api/v3/market/time", callback=self.on_query_time)
 
     def query_contract(self) -> None:
-        """查询 U 本位合约列表。"""
+        # v2 contracts endpoint still works and returns full contract specs
         self.add_request(
             "GET",
-            f"/api/v2/mix/market/contracts?productType={PRODUCT_TYPE}",
+            f"/api/v2/mix/market/contracts?productType={CATEGORY}",
             callback=self.on_query_contract,
         )
 
-    def query_account(self) -> None:
-        """查询合约账户。"""
+    def query_unfilled_orders(self) -> None:
+        """v3 UTA unfilled orders (no category param needed)."""
         self.add_request(
             "GET",
-            f"/api/v2/mix/account/accounts?productType={PRODUCT_TYPE}",
-            callback=self.on_query_account,
-            data={"signed": True},
-        )
-
-    def query_position(self) -> None:
-        """查询当前持仓。"""
-        self.add_request(
-            "GET",
-            f"/api/v2/mix/position/allPositions?productType={PRODUCT_TYPE}&marginMode=crossed",
-            callback=self.on_query_position,
-            data={"signed": True},
-        )
-
-    def query_order(self) -> None:
-        """查询当前挂单。"""
-        self.add_request(
-            "GET",
-            f"/api/v2/mix/order/ordersPending?productType={PRODUCT_TYPE}",
+            "/api/v3/trade/unfilled-orders",
             callback=self.on_query_order,
             data={"signed": True},
         )
 
+    # ── callbacks ────────────────────────────────────────
+
     def on_query_time(self, data: dict, request: Request) -> None:
-        """服务器时间回调。"""
         server_time: int = int(data.get("data", {}).get("serverTime", 0))
         local_time: int = int(time.time() * 1000)
         offset: int = local_time - server_time
@@ -371,10 +300,9 @@ class RestApi(RestClient):
         self.query_contract()
 
     def on_query_contract(self, data: dict, request: Request) -> None:
-        """解析 U 本位合约列表。"""
         items: list = data.get("data", [])
         if not items:
-            self.gateway.write_log("No linear contracts returned from Bitget")
+            self.gateway.write_log("No contracts returned")
             return
 
         for item in items:
@@ -382,9 +310,7 @@ class RestApi(RestClient):
             if not name:
                 continue
 
-            # vnpy symbol: BTCUSDT_SWAP_BITGET
-            symbol: str = name + "_SWAP_BITGET"
-
+            symbol: str = name  # vt_symbol 自动拼为 BTCUSDT.BITGET
             pricetick: float = float(item.get("pricePlace", 0) or 0)
             pricetick = 10 ** (-pricetick) if pricetick else 0.01
             volume_place: int = int(item.get("volumePlace", 0) or 0)
@@ -392,7 +318,7 @@ class RestApi(RestClient):
 
             contract: ContractData = ContractData(
                 symbol=symbol,
-                exchange=Exchange.GLOBAL,
+                exchange=Exchange.BITGET,
                 name=name,
                 pricetick=pricetick,
                 size=1,
@@ -405,67 +331,16 @@ class RestApi(RestClient):
             )
             self.gateway.on_contract(contract)
 
-        self.gateway.write_log(
-            f"Contract data received ({len(items)} linear contracts)"
-        )
+        self.gateway.write_log(f"Contract data received ({len(items)} contracts)")
 
-        # 加载私有数据
+        # 加载挂单（账户/持仓由 WS 推送）
         if self.key and self.secret:
-            self.query_order()
-            self.query_account()
-            self.query_position()
+            self.query_unfilled_orders()
             self.gateway.trade_api.subscribe_user_data_stream()
 
-    def on_query_account(self, data: dict, request: Request) -> None:
-        """解析合约账户。"""
-        items: list = data.get("data", [])
-        for item in items:
-            coin: str = item.get("marginCoin", "USDT")
-            available: float = float(item.get("available", 0) or 0)
-            frozen: float = float(item.get("frozen", 0) or 0)
-            locked: float = float(item.get("locked", 0) or 0)
-
-            balance: float = available + frozen + locked
-            if balance:
-                account: AccountData = AccountData(
-                    accountid=coin,
-                    balance=balance,
-                    frozen=frozen + locked,
-                    gateway_name=self.gateway_name,
-                )
-                self.gateway.on_account(account)
-
-        self.gateway.write_log("Account data received")
-
-    def on_query_position(self, data: dict, request: Request) -> None:
-        """解析持仓。"""
-        items: list = data.get("data", [])
-        for item in items:
-            name: str = item.get("symbol", "")
-            contract: ContractData | None = self.gateway.get_contract_by_name(name)
-            if not contract:
-                continue
-
-            total: float = float(item.get("total", 0) or 0)
-            if total == 0:
-                continue
-
-            position: PositionData = PositionData(
-                symbol=contract.symbol,
-                exchange=Exchange.GLOBAL,
-                direction=Direction.NET,
-                volume=total,
-                price=float(item.get("averageOpenPrice", 0) or 0),
-                pnl=float(item.get("unrealizedPL", 0) or 0),
-                gateway_name=self.gateway_name,
-            )
-            self.gateway.on_position(position)
-
-        self.gateway.write_log("Position data received")
-
     def on_query_order(self, data: dict, request: Request) -> None:
-        """解析当前挂单。"""
-        orders: list = data.get("data", [])
+        """v3 UTA order list parsing."""
+        orders: list = data.get("data", {}).get("list", [])
         for d in orders:
             name: str = d.get("symbol", "")
             contract: ContractData | None = self.gateway.get_contract_by_name(name)
@@ -473,7 +348,7 @@ class RestApi(RestClient):
                 continue
 
             order_type_str: str = d.get("orderType", "limit")
-            force: str = d.get("force", "normal")
+            force: str = d.get("timeInForce", "gtc")
             key: tuple[str, str] = (order_type_str, force)
             order_type: OrderType | None = ORDERTYPE_BITGET2VT.get(key)
             if not order_type:
@@ -482,29 +357,22 @@ class RestApi(RestClient):
             order: OrderData = OrderData(
                 orderid=d.get("clientOid", ""),
                 symbol=contract.symbol,
-                exchange=Exchange.GLOBAL,
+                exchange=Exchange.BITGET,
                 price=float(d.get("price", 0) or 0),
-                volume=float(d.get("size", 0) or 0),
+                volume=float(d.get("qty", 0) or 0),
                 type=order_type,
-                direction=DIRECTION_BITGET2VT.get(
-                    d.get("side", ""), Direction.LONG
-                ),
+                direction=DIRECTION_BITGET2VT.get(d.get("side", ""), Direction.LONG),
                 traded=float(d.get("filledQty", 0) or 0),
-                status=STATUS_BITGET2VT.get(
-                    d.get("state", ""), Status.NOTTRADED
-                ),
+                status=STATUS_BITGET2VT.get(d.get("state", ""), Status.NOTTRADED),
                 datetime=generate_datetime(int(d.get("cTime", 0))),
                 gateway_name=self.gateway_name,
             )
             self.gateway.on_order(order)
 
-        self.gateway.write_log("Order data received")
+        self.gateway.write_log(f"Order data received ({len(orders)} open orders)")
 
     def query_history(self, req: HistoryRequest) -> list[BarData]:
-        """查询历史 K 线数据。"""
-        contract: ContractData | None = self.gateway.get_contract_by_symbol(
-            req.symbol
-        )
+        contract: ContractData | None = self.gateway.get_contract_by_symbol(req.symbol)
         if not contract:
             return []
 
@@ -514,11 +382,7 @@ class RestApi(RestClient):
         history: list[BarData] = []
         limit: int = 200
         bitget_interval: str = INTERVAL_VT2BITGET.get(req.interval, "1m")
-        end_time: int = (
-            int(datetime.timestamp(req.end))
-            if req.end
-            else int(time.time())
-        )
+        end_time: int = int(datetime.timestamp(req.end)) if req.end else int(time.time())
         start_time: int = int(datetime.timestamp(req.start))
 
         while True:
@@ -527,20 +391,17 @@ class RestApi(RestClient):
                 "granularity": bitget_interval,
                 "endTime": str(end_time * 1000),
                 "limit": str(limit),
+                "productType": CATEGORY,
             }
 
             resp: Response = self.request(
-                "GET",
-                "/api/v2/mix/market/candles",
-                params=params,
+                "GET", "/api/v2/mix/market/candles", params=params
             )
 
             if resp.status_code // 100 != 2:
-                msg: str = (
-                    f"Query kline failed, status: {resp.status_code}, "
-                    f"msg: {resp.text}"
+                self.gateway.write_log(
+                    f"Query kline failed: {resp.status_code} {resp.text}"
                 )
-                self.gateway.write_log(msg)
                 break
 
             result: dict = resp.json()
@@ -566,14 +427,10 @@ class RestApi(RestClient):
                 buf.append(bar)
 
             history.extend(buf)
-
-            begin: datetime = buf[0].datetime
-            end: datetime = buf[-1].datetime
-            msg = (
-                f"Kline history: {req.symbol} {req.interval.value}, "
-                f"{begin} — {end}"
+            self.gateway.write_log(
+                f"Kline: {req.symbol} {req.interval.value} "
+                f"{buf[0].datetime} — {buf[-1].datetime}"
             )
-            self.gateway.write_log(msg)
 
             if len(rows) < limit:
                 break
@@ -588,139 +445,88 @@ class RestApi(RestClient):
 
         if history:
             history.pop(-1)
-
         return history
 
 
 # ── MdApi ──────────────────────────────────────────────
 
 class MdApi(WebsocketClient):
-    """
-    Bitget U 本位合约行情 WebSocket 客户端。
-
-    订阅公共频道：ticker, books, candle1m
-    """
+    """Bitget v3 公共行情 WebSocket。"""
 
     def __init__(self, gateway: BitgetLinearGateway) -> None:
-        """初始化。"""
         super().__init__()
-
         self.gateway: BitgetLinearGateway = gateway
         self.gateway_name: str = gateway.gateway_name
-
         self.ticks: dict[str, TickData] = {}
         self.new_channels: list[dict] = []
         self.subscribed: set[str] = set()
 
-    def connect(
-        self,
-        server: str,
-        proxy_host: str,
-        proxy_port: int,
-    ) -> None:
-        """连接行情 WebSocket。"""
-        self.init(
-            REAL_PUBLIC_HOST,
-            proxy_host,
-            proxy_port,
-            receive_timeout=WEBSOCKET_TIMEOUT,
-        )
+    def connect(self, server: str, proxy_host: str, proxy_port: int) -> None:
+        self.init(REAL_PUBLIC_HOST, proxy_host, proxy_port, receive_timeout=WEBSOCKET_TIMEOUT)
         self.start()
 
     def on_connected(self) -> None:
-        """连接成功：重新订阅。"""
         self.gateway.write_log("MD API connected")
-
         for symbol in list(self.ticks.keys()):
-            contract: ContractData | None = (
-                self.gateway.get_contract_by_symbol(symbol)
-            )
+            contract = self.gateway.get_contract_by_symbol(symbol)
             if not contract:
                 continue
-
-            channels: list[dict] = [
-                {"channel": "ticker", "instId": contract.name,
-                 "instType": PRODUCT_TYPE},
-                {"channel": "books", "instId": contract.name,
-                 "instType": PRODUCT_TYPE},
-                {"channel": "candle1m", "instId": contract.name,
-                 "instType": PRODUCT_TYPE},
-            ]
-
-            self.send_packet({"op": "subscribe", "args": channels})
+            self.send_packet({
+                "op": "subscribe",
+                "args": [
+                    {"instType": CATEGORY, "channel": "ticker", "instId": contract.name},
+                    {"instType": CATEGORY, "channel": "books", "instId": contract.name},
+                    {"instType": CATEGORY, "channel": "candle1m", "instId": contract.name},
+                ],
+            })
 
     def subscribe(self, req: SubscribeRequest) -> None:
-        """订阅行情。"""
         if req.symbol in self.subscribed:
             return
-
-        contract: ContractData | None = (
-            self.gateway.get_contract_by_symbol(req.symbol)
-        )
+        contract = self.gateway.get_contract_by_symbol(req.symbol)
         if not contract:
-            self.gateway.write_log(
-                f"Failed to subscribe, symbol not found: {req.symbol}"
-            )
+            self.gateway.write_log(f"Failed to subscribe, symbol not found: {req.symbol}")
             return
 
         self.subscribed.add(req.symbol)
-
         tick: TickData = TickData(
-            symbol=req.symbol,
-            name=contract.name,
-            exchange=Exchange.GLOBAL,
-            datetime=datetime.now(UTC_TZ),
-            gateway_name=self.gateway_name,
+            symbol=req.symbol, name=contract.name, exchange=Exchange.BITGET,
+            datetime=datetime.now(UTC_TZ), gateway_name=self.gateway_name,
         )
         tick.extra = {}
         self.ticks[req.symbol] = tick
 
-        channels: list[dict] = [
-            {"channel": "ticker", "instId": contract.name,
-             "instType": PRODUCT_TYPE},
-            {"channel": "books", "instId": contract.name,
-             "instType": PRODUCT_TYPE},
-            {"channel": "candle1m", "instId": contract.name,
-             "instType": PRODUCT_TYPE},
-        ]
-        self.new_channels.extend(channels)
+        self.new_channels.extend([
+            {"instType": CATEGORY, "channel": "ticker", "instId": contract.name},
+            {"instType": CATEGORY, "channel": "books", "instId": contract.name},
+            {"instType": CATEGORY, "channel": "candle1m", "instId": contract.name},
+        ])
 
     def subscribe_new_channels(self) -> None:
-        """定时发送新订阅请求。"""
         if not self.new_channels:
             return
-
-        self.send_packet({
-            "op": "subscribe",
-            "args": list(self.new_channels),
-        })
+        self.send_packet({"op": "subscribe", "args": list(self.new_channels)})
         self.new_channels = []
 
     def on_packet(self, packet: dict) -> None:
-        """解析行情推送。"""
         action: str = packet.get("action", "")
         if not action:
             return
 
         arg: dict = packet.get("arg", {})
-        if not arg:
-            return
-
         channel: str = arg.get("channel", "")
         inst_id: str = arg.get("instId", "")
 
-        contract: ContractData | None = self.gateway.get_contract_by_name(inst_id)
+        contract = self.gateway.get_contract_by_name(inst_id)
         if not contract:
             return
-
-        tick: TickData | None = self.ticks.get(contract.symbol)
+        tick = self.ticks.get(contract.symbol)
         if not tick:
             return
 
         data: list = packet.get("data", [])
         if not data:
             return
-
         item: dict = data[0]
 
         if channel == "ticker":
@@ -731,7 +537,6 @@ class MdApi(WebsocketClient):
             tick.low_price = float(item.get("low24h", 0) or 0)
             tick.last_price = float(item.get("last", 0) or 0)
             tick.datetime = generate_datetime(int(item.get("ts", 0)))
-
         elif channel == "books":
             asks: list = item.get("asks", [])
             bids: list = item.get("bids", [])
@@ -741,24 +546,17 @@ class MdApi(WebsocketClient):
             if asks:
                 tick.ask_price_1 = float(asks[0][0])
                 tick.ask_volume_1 = float(asks[0][1])
-
         elif channel == "candle1m":
             candle: list = item if isinstance(item, list) else []
             if len(candle) >= 6:
                 if tick.extra is None:
                     tick.extra = {}
-
                 tick.extra["bar"] = BarData(
-                    symbol=contract.name,
-                    exchange=Exchange.GLOBAL,
-                    datetime=generate_datetime(int(candle[0])),
-                    interval=Interval.MINUTE,
-                    volume=float(candle[5]),
-                    turnover=float(candle[6]) if len(candle) > 6 else 0,
-                    open_price=float(candle[1]),
-                    high_price=float(candle[2]),
-                    low_price=float(candle[3]),
-                    close_price=float(candle[4]),
+                    symbol=contract.name, exchange=Exchange.BITGET,
+                    datetime=generate_datetime(int(candle[0])), interval=Interval.MINUTE,
+                    volume=float(candle[5]), turnover=float(candle[6]) if len(candle) > 6 else 0,
+                    open_price=float(candle[1]), high_price=float(candle[2]),
+                    low_price=float(candle[3]), close_price=float(candle[4]),
                     gateway_name=self.gateway_name,
                 )
 
@@ -767,106 +565,63 @@ class MdApi(WebsocketClient):
             self.gateway.on_tick(copy(tick))
 
     def on_disconnected(self, status_code: int, msg: str) -> None:
-        """断连回调。"""
-        self.gateway.write_log(
-            f"MD API disconnected, code: {status_code}, msg: {msg}"
-        )
+        self.gateway.write_log(f"MD API disconnected, code: {status_code}, msg: {msg}")
 
     def on_error(self, e: Exception) -> None:
-        """异常回调。"""
         self.gateway.write_log(f"MD API exception: {e}")
 
 
 # ── TradeApi ───────────────────────────────────────────
 
 class TradeApi(WebsocketClient):
-    """
-    Bitget U 本位合约交易 WebSocket 客户端。
-
-    私有频道：下单、撤单、账户更新、持仓更新、订单更新。
-    """
+    """Bitget v3 私有 WebSocket (下单/撤单/账户/持仓/订单)。"""
 
     def __init__(self, gateway: BitgetLinearGateway) -> None:
-        """初始化。"""
         super().__init__()
-
         self.gateway: BitgetLinearGateway = gateway
         self.gateway_name: str = gateway.gateway_name
-
         self.key: str = ""
         self.secret: str = ""
         self.passphrase: str = ""
-        self.server: str = ""
-
         self.reqid: int = 0
         self.order_count: int = 0
         self.order_prefix: str = ""
-
         self.reqid_callback_map: dict[int, Callable] = {}
         self.reqid_order_map: dict[int, OrderData] = {}
-
         self.logged_in: bool = False
         self.user_stream_subscribed: bool = False
 
     def connect(
-        self,
-        key: str,
-        secret: str,
-        passphrase: str,
-        server: str,
-        proxy_host: str,
-        proxy_port: int,
+        self, key: str, secret: str, passphrase: str,
+        server: str, proxy_host: str, proxy_port: int,
     ) -> None:
-        """连接交易 WebSocket。"""
         self.key = key
         self.secret = secret
         self.passphrase = passphrase
-        self.server = server
-
         self.order_prefix = datetime.now().strftime("%y%m%d%H%M%S")
-
-        self.init(
-            REAL_PRIVATE_HOST,
-            proxy_host,
-            proxy_port,
-            receive_timeout=WEBSOCKET_TIMEOUT,
-        )
+        self.init(REAL_PRIVATE_HOST, proxy_host, proxy_port, receive_timeout=WEBSOCKET_TIMEOUT)
         self.start()
 
+    def _make_sign(self) -> str:
+        ts = str(int(time.time() * 1000))
+        return base64.b64encode(
+            hmac.new(self.secret.encode(), ts.encode(), hashlib.sha256).digest()
+        ).decode(), ts
+
     def on_connected(self) -> None:
-        """连接成功：登录认证。"""
         self.gateway.write_log("Trade API connected")
-
-        timestamp: str = str(int(time.time() * 1000))
-        prehash: str = timestamp
-        signature: str = base64.b64encode(
-            hmac.new(
-                self.secret.encode("utf-8"),
-                prehash.encode("utf-8"),
-                hashlib.sha256,
-            ).digest()
-        ).decode("utf-8")
-
+        sig, ts = self._make_sign()
         self.send_packet({
             "op": "login",
-            "args": [{
-                "apiKey": self.key,
-                "passphrase": self.passphrase,
-                "timestamp": timestamp,
-                "sign": signature,
-            }],
+            "args": [{"apiKey": self.key, "passphrase": self.passphrase, "timestamp": ts, "sign": sig}],
         })
 
     def on_disconnected(self, status_code: int, msg: str) -> None:
-        """断连回调。"""
         self.logged_in = False
         self.user_stream_subscribed = False
-        self.gateway.write_log(
-            f"Trade API disconnected, code: {status_code}, msg: {msg}"
-        )
+        self.gateway.write_log(f"Trade API disconnected, code: {status_code}, msg: {msg}")
 
     def on_packet(self, packet: dict) -> None:
-        """解析交易推送。"""
         event: str = packet.get("event", "")
 
         if event == "login":
@@ -876,266 +631,181 @@ class TradeApi(WebsocketClient):
                 self.gateway.write_log("Trade API login success")
                 self.subscribe_user_data_stream()
             else:
-                msg: str = packet.get("msg", "unknown error")
-                self.gateway.write_log(f"Trade API login failed: {msg}")
+                self.gateway.write_log(f"Trade API login failed: {packet.get('msg', '')}")
             return
 
         if event == "subscribe":
-            self.gateway.write_log(
-                f"User data stream subscribed: {packet.get('arg', {})}"
-            )
+            self.gateway.write_log(f"User data stream subscribed: {packet.get('arg', {})}")
             return
 
-        # 订单/账户/持仓更新
+        # Push data (event empty or "update"/"snapshot")
         arg: dict = packet.get("arg", {})
-        channel: str = arg.get("channel", "")
+        topic: str = arg.get("topic", "")
 
-        if channel == "account":
+        if topic == "account":
             self._on_account_update(packet)
-        elif channel == "positions":
+        elif topic == "position":
             self._on_position_update(packet)
-        elif channel == "orders":
+        elif topic == "order":
             self._on_order_update(packet)
 
-        # API 响应
-        if not event and not channel:
+        # API 响应 (place-order / cancel-order)
+        if not event and not topic:
             reqid: int = packet.get("requestId", 0)
             callback: Callable | None = self.reqid_callback_map.get(reqid)
             if callback:
                 callback(packet)
 
     def _on_account_update(self, packet: dict) -> None:
-        """处理账户更新。"""
         data: list = packet.get("data", [])
         for item in data:
             coin: str = item.get("marginCoin", "USDT")
             available: float = float(item.get("available", 0) or 0)
             frozen: float = float(item.get("frozen", 0) or 0)
             locked: float = float(item.get("locked", 0) or 0)
-
             balance: float = available + frozen + locked
             if balance:
-                account: AccountData = AccountData(
-                    accountid=coin,
-                    balance=balance,
-                    frozen=frozen + locked,
+                self.gateway.on_account(AccountData(
+                    accountid=coin, balance=balance, frozen=frozen + locked,
                     gateway_name=self.gateway_name,
-                )
-                self.gateway.on_account(account)
+                ))
 
     def _on_position_update(self, packet: dict) -> None:
-        """处理持仓更新。"""
         data: list = packet.get("data", [])
         for item in data:
             name: str = item.get("symbol", "")
-            contract: ContractData | None = (
-                self.gateway.get_contract_by_name(name)
-            )
+            contract = self.gateway.get_contract_by_name(name)
             if not contract:
                 continue
-
-            total: float = float(item.get("total", 0) or 0)
+            total: float = float(item.get("size", 0) or 0)
             if total == 0:
                 continue
-
-            position: PositionData = PositionData(
-                symbol=contract.symbol,
-                exchange=Exchange.GLOBAL,
-                direction=Direction.NET,
-                volume=total,
-                price=float(item.get("averageOpenPrice", 0) or 0),
-                pnl=float(item.get("unrealizedPL", 0) or 0),
+            self.gateway.on_position(PositionData(
+                symbol=contract.symbol, exchange=Exchange.BITGET,
+                direction=Direction.NET, volume=total,
+                price=float(item.get("avgPrice", 0) or 0),
+                pnl=float(item.get("unrealizedPnl", 0) or 0),
                 gateway_name=self.gateway_name,
-            )
-            self.gateway.on_position(position)
+            ))
 
     def _on_order_update(self, packet: dict) -> None:
-        """处理订单更新。"""
         data: list = packet.get("data", [])
         for event in data:
             name: str = event.get("symbol", "")
-            contract: ContractData | None = (
-                self.gateway.get_contract_by_name(name)
-            )
+            contract = self.gateway.get_contract_by_name(name)
             if not contract:
                 continue
 
             orderid: str = event.get("clientOid", "")
             order_type_str: str = event.get("orderType", "limit")
-            force: str = event.get("force", "normal")
+            force: str = event.get("timeInForce", "gtc")
             key: tuple[str, str] = (order_type_str, force)
             order_type: OrderType | None = ORDERTYPE_BITGET2VT.get(key)
             if not order_type:
                 order_type = OrderType.LIMIT
 
             order: OrderData = OrderData(
-                symbol=contract.symbol,
-                exchange=Exchange.GLOBAL,
-                orderid=orderid,
+                symbol=contract.symbol, exchange=Exchange.BITGET, orderid=orderid,
                 type=order_type,
-                direction=DIRECTION_BITGET2VT.get(
-                    event.get("side", ""), Direction.LONG
-                ),
+                direction=DIRECTION_BITGET2VT.get(event.get("side", ""), Direction.LONG),
                 price=float(event.get("price", 0) or 0),
-                volume=float(event.get("size", 0) or 0),
+                volume=float(event.get("qty", 0) or 0),
                 traded=float(event.get("filledQty", 0) or 0),
-                status=STATUS_BITGET2VT.get(
-                    event.get("state", ""), Status.NOTTRADED
-                ),
+                status=STATUS_BITGET2VT.get(event.get("state", ""), Status.NOTTRADED),
                 datetime=generate_datetime(int(event.get("cTime", 0))),
                 gateway_name=self.gateway_name,
             )
             self.gateway.on_order(order)
 
             # 成交推送
-            fill_qty: float = float(event.get("lastFillQuantity", 0) or 0)
+            fill_qty: float = float(event.get("lastFillQty", 0) or 0)
             fill_price: float = float(event.get("lastFillPrice", 0) or 0)
             fill_id: str = event.get("tradeId", "")
             if fill_qty > 0 and fill_price > 0:
-                trade: TradeData = TradeData(
-                    symbol=contract.symbol,
-                    exchange=Exchange.GLOBAL,
-                    orderid=orderid,
-                    tradeid=fill_id,
-                    direction=DIRECTION_BITGET2VT.get(
-                        event.get("side", ""), Direction.LONG
-                    ),
-                    price=fill_price,
-                    volume=fill_qty,
-                    datetime=generate_datetime(
-                        int(event.get("uTime", 0))
-                    ),
+                self.gateway.on_trade(TradeData(
+                    symbol=contract.symbol, exchange=Exchange.BITGET,
+                    orderid=orderid, tradeid=fill_id,
+                    direction=DIRECTION_BITGET2VT.get(event.get("side", ""), Direction.LONG),
+                    price=fill_price, volume=fill_qty,
+                    datetime=generate_datetime(int(event.get("uTime", 0))),
                     gateway_name=self.gateway_name,
-                )
-                self.gateway.on_trade(trade)
+                ))
 
     def send_order(self, req: OrderRequest) -> str:
-        """发送委托。"""
-        contract: ContractData | None = (
-            self.gateway.get_contract_by_symbol(req.symbol)
-        )
+        contract = self.gateway.get_contract_by_symbol(req.symbol)
         if not contract:
-            self.gateway.write_log(
-                f"Failed to send order, symbol not found: {req.symbol}"
-            )
+            self.gateway.write_log(f"Failed to send order, symbol not found: {req.symbol}")
             return ""
 
         self.order_count += 1
         orderid: str = self.order_prefix + str(self.order_count)
-
         order: OrderData = req.create_order_data(orderid, self.gateway_name)
         self.gateway.on_order(order)
 
+        order_type, force = ORDERTYPE_VT2BITGET[req.type]
         params: dict = {
+            "category": CATEGORY,
             "symbol": contract.name,
             "side": DIRECTION_VT2BITGET[req.direction],
-            "orderType": ORDERTYPE_VT2BITGET[req.type][0],
-            "force": ORDERTYPE_VT2BITGET[req.type][1],
-            "size": format_float(req.volume),
+            "posSide": DIRECTION_VT2BITGET[req.direction],  # v3 required in hedge mode
+            "orderType": order_type,
+            "timeInForce": force,
+            "qty": format_float(req.volume),
             "clientOid": orderid,
-            "productType": PRODUCT_TYPE,
-            "marginMode": "crossed",
-            "marginCoin": "USDT",
+            "price": format_float(req.price) if req.type != OrderType.MARKET else "",
         }
 
         if req.type == OrderType.MARKET:
             params["orderType"] = "market"
-            params["force"] = "normal"
-        else:
-            order_type, force = ORDERTYPE_VT2BITGET[req.type]
-            params["orderType"] = order_type
-            params["force"] = force
-            params["price"] = format_float(req.price)
+            params["timeInForce"] = "gtc"
+            del params["price"]
 
         self.reqid += 1
         self.reqid_callback_map[self.reqid] = self._on_send_order
         self.reqid_order_map[self.reqid] = order
 
-        timestamp: str = str(int(time.time() * 1000))
-        prehash: str = timestamp
-        signature: str = base64.b64encode(
-            hmac.new(
-                self.secret.encode("utf-8"),
-                prehash.encode("utf-8"),
-                hashlib.sha256,
-            ).digest()
-        ).decode("utf-8")
-
+        sig, ts = self._make_sign()
         self.send_packet({
             "op": "place-order",
-            "args": [{
-                **params,
-                "timestamp": timestamp,
-                "sign": signature,
-            }],
+            "args": [{**params, "timestamp": ts, "sign": sig}],
             "requestId": str(self.reqid),
         })
         return order.vt_orderid
 
     def cancel_order(self, req: CancelRequest) -> None:
-        """撤销委托。"""
-        contract: ContractData | None = (
-            self.gateway.get_contract_by_symbol(req.symbol)
-        )
+        contract = self.gateway.get_contract_by_symbol(req.symbol)
         if not contract:
-            self.gateway.write_log(
-                f"Failed to cancel order, symbol not found: {req.symbol}"
-            )
+            self.gateway.write_log(f"Failed to cancel order, symbol not found: {req.symbol}")
             return
 
         self.reqid += 1
         self.reqid_callback_map[self.reqid] = self._on_cancel_order
-
-        timestamp: str = str(int(time.time() * 1000))
-        prehash: str = timestamp
-        signature: str = base64.b64encode(
-            hmac.new(
-                self.secret.encode("utf-8"),
-                prehash.encode("utf-8"),
-                hashlib.sha256,
-            ).digest()
-        ).decode("utf-8")
-
+        sig, ts = self._make_sign()
         self.send_packet({
             "op": "cancel-order",
-            "args": [{
-                "symbol": contract.name,
-                "clientOid": req.orderid,
-                "productType": PRODUCT_TYPE,
-                "marginCoin": "USDT",
-                "timestamp": timestamp,
-                "sign": signature,
-            }],
+            "args": [{"symbol": contract.name, "clientOid": req.orderid, "timestamp": ts, "sign": sig}],
             "requestId": str(self.reqid),
         })
 
     def subscribe_user_data_stream(self) -> None:
-        """订阅用户数据流（账户 + 持仓 + 订单）。"""
         if not self.key or self.user_stream_subscribed:
             return
-
         self.user_stream_subscribed = True
-
         self.send_packet({
             "op": "subscribe",
             "args": [
-                {"channel": "account", "instType": PRODUCT_TYPE},
-                {"channel": "positions", "instType": PRODUCT_TYPE},
-                {"channel": "orders", "instType": PRODUCT_TYPE},
+                {"instType": "UTA", "topic": "account"},
+                {"instType": "UTA", "topic": "position"},
+                {"instType": "UTA", "topic": "order"},
             ],
         })
-
         self.gateway.write_log("User data stream subscribed")
 
     def _on_send_order(self, packet: dict) -> None:
-        """下单结果回调。"""
         code: str = packet.get("code", "")
         if code == "0":
             return
-
-        msg: str = packet.get("msg", "unknown error")
-        self.gateway.write_log(f"Order rejected: {msg}")
-
+        self.gateway.write_log(f"Order rejected: {packet.get('msg', '')}")
         request_id: int = int(packet.get("requestId", 0))
         order: OrderData | None = self.reqid_order_map.get(request_id)
         if order:
@@ -1143,28 +813,22 @@ class TradeApi(WebsocketClient):
             self.gateway.on_order(order)
 
     def _on_cancel_order(self, packet: dict) -> None:
-        """撤单结果回调。"""
         code: str = packet.get("code", "")
         if code == "0":
             return
-
-        msg: str = packet.get("msg", "unknown error")
-        self.gateway.write_log(f"Cancel rejected: {msg}")
+        self.gateway.write_log(f"Cancel rejected: {packet.get('msg', '')}")
 
     def on_error(self, e: Exception) -> None:
-        """异常回调。"""
         self.gateway.write_log(f"Trade API exception: {e}")
 
 
 # ── 工具函数 ────────────────────────────────────────────
 
 def generate_datetime(timestamp: float) -> datetime:
-    """将毫秒时间戳转为 UTC datetime。"""
     if timestamp > 1_000_000_000_000:
         timestamp = timestamp / 1000
     return datetime.fromtimestamp(timestamp, tz=UTC_TZ)
 
 
 def format_float(f: float) -> str:
-    """格式化浮点数，避免精度错误。"""
     return format_float_positional(f, trim="-")

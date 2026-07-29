@@ -8,14 +8,22 @@ vnpy CTA 无界面实盘运行脚本。
   - 进程: 单进程 + systemd 管理（加密货币全天交易，无需交易时段判断）
 """
 import json
+import os
 import signal
 import sys
 from pathlib import Path
 from time import sleep
 
 PROJECT_DIR = Path(__file__).resolve().parent
+os.chdir(PROJECT_DIR)  # 确保 Path.cwd() 指向项目根，引擎用 CWD 定位 strategies/
 sys.path.insert(0, str(PROJECT_DIR))
 sys.path.insert(0, str(PROJECT_DIR / "strategies"))
+
+# 注册 BITGET 交易所枚举（若 pip 包中未预添加）
+from vnpy.trader.constant import Exchange
+if "BITGET" not in Exchange.__members__:
+    Exchange._member_map_["BITGET"] = Exchange._value2member_map_["BITGET"] = Exchange.GLOBAL
+    Exchange._member_names_.append("BITGET")  # type: ignore[attr-defined]
 
 from vnpy.event import EventEngine
 from vnpy.trader.setting import SETTINGS
@@ -71,17 +79,21 @@ def load_custom_strategies(cta_engine: CtaEngine) -> int:
     count = 0
 
     for item in config.get("strategies", []):
+        name = item["strategy_name"]
+        # 跳过 init_engine 已加载的策略（load_strategy_setting 从 .vntrader 恢复的）
+        if name in cta_engine.strategies:
+            continue
         try:
             cta_engine.add_strategy(
                 item["class_name"],
-                item["strategy_name"],
+                name,
                 item["vt_symbol"],
                 item.get("setting", {}),
             )
-            logger.info(f"策略加载: {item['strategy_name']} ({item['class_name']}) @ {item['vt_symbol']}")
+            logger.info(f"策略加载: {name} ({item['class_name']}) @ {item['vt_symbol']}")
             count += 1
         except Exception as e:
-            logger.error(f"策略加载失败: {item.get('strategy_name', '?')} — {e}")
+            logger.error(f"策略加载失败: {name} — {e}")
 
     return count
 
@@ -106,17 +118,28 @@ def main() -> None:
     gateway_setting = load_gateway_setting()
     main_engine.connect(gateway_setting, "BITGET_LINEAR")
     logger.info("连接BITGET_LINEAR接口")
-    sleep(10)
+    sleep(10)  # 等待网关 REST + WS 连接完成
 
-    # 初始化 CTA 引擎
+    # 同步注册合约（vnpy 事件引擎异步处理合约注册，网关拉取后需手动同步）
+    gateway = main_engine.get_gateway("BITGET_LINEAR")
+    for contract in gateway.symbol_contract_map.values():
+        main_engine.get_engine("oms").contracts[contract.vt_symbol] = contract
+
+    # 初始化 CTA 引擎（策略配置改用项目本地路径，隔离全局 ~/.vntrader/）
+    vntrader = str(PROJECT_DIR / ".vntrader")
+    os.makedirs(vntrader, exist_ok=True)
+    cta_engine.setting_filename = f"{vntrader}/cta_strategy_setting.json"
+    cta_engine.data_filename = f"{vntrader}/cta_strategy_data.json"
+    os.chdir(PROJECT_DIR)
     cta_engine.init_engine()
-    logger.info("CTA策略初始化完成")
 
     # 加载自定义策略（官方无此步骤，策略通过 init_engine 从 vt_setting 加载）
     load_custom_strategies(cta_engine)
 
-    cta_engine.init_all_strategies()
-    sleep(60)
+    futures = cta_engine.init_all_strategies()
+    for name, f in futures.items():
+        if f:
+            f.result()  # 等待异步初始化完成
     logger.info("CTA策略全部初始化")
 
     cta_engine.start_all_strategies()

@@ -12,5 +12,9 @@ vnpy_rest
 vnpy_websocket
 numpy
 
+# 本地代理工具（SOCKS5 → HTTP 转换）
+PySocks
+pproxy
+
 # 数据服务（可选，按需启用）
 # vnpy_rqdata
