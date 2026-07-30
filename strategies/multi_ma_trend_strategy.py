@@ -97,7 +97,7 @@ class MultiMaTrendStrategy(CtaTemplate):
     def on_init(self) -> None:
         """策略初始化。"""
         self.write_log("策略初始化")
-        self.load_bar(30)
+        self.load_bar(5)
 
     def on_start(self) -> None:
         """策略启动。"""
@@ -114,6 +114,7 @@ class MultiMaTrendStrategy(CtaTemplate):
     def on_bar(self, bar: BarData) -> None:
         """1分钟K线更新。"""
         self.bg.update_bar(bar)
+        self.write_log(bar)
 
     def on_hour_bar(self, bar: BarData) -> None:
         """1小时K线更新，执行核心策略逻辑。"""

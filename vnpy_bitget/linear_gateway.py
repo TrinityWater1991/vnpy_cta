@@ -64,7 +64,8 @@ REAL_PRIVATE_HOST: str = "wss://ws.bitget.com/v3/ws/private"
 
 WEBSOCKET_TIMEOUT = 24 * 60 * 60
 
-CATEGORY: str = "USDT-FUTURES"
+CATEGORY: str = "USDT-FUTURES"                      # REST API productType (uppercase)
+WS_INST_TYPE: str = "usdt-futures"                  # v3 WS public instType (lowercase)
 
 # 订单状态映射
 STATUS_BITGET2VT: dict[str, Status] = {
@@ -86,13 +87,18 @@ ORDERTYPE_BITGET2VT: dict[tuple[str, str], OrderType] = {
     v: k for k, v in ORDERTYPE_VT2BITGET.items()
 }
 
-# 方向映射
+# 方向映射 (订单 side)
 DIRECTION_VT2BITGET: dict[Direction, str] = {
     Direction.LONG: "buy",
     Direction.SHORT: "sell",
 }
 DIRECTION_BITGET2VT: dict[str, Direction] = {
     v: k for k, v in DIRECTION_VT2BITGET.items()
+}
+# 持仓方向映射 (v3 posSide)
+POSSIDE_VT2BITGET: dict[Direction, str] = {
+    Direction.LONG: "long",
+    Direction.SHORT: "short",
 }
 
 # K 线周期映射
@@ -434,7 +440,7 @@ class RestApi(RestClient):
 
             if len(rows) < limit:
                 break
-            if req.end and buf[-1].datetime >= req.end:
+            if req.end and buf[-1].datetime.replace(tzinfo=None) >= req.end.replace(tzinfo=None):
                 break
 
             next_end = int(datetime.timestamp(buf[0].datetime)) - 1
@@ -474,9 +480,9 @@ class MdApi(WebsocketClient):
             self.send_packet({
                 "op": "subscribe",
                 "args": [
-                    {"instType": CATEGORY, "channel": "ticker", "instId": contract.name},
-                    {"instType": CATEGORY, "channel": "books", "instId": contract.name},
-                    {"instType": CATEGORY, "channel": "candle1m", "instId": contract.name},
+                    {"instType": WS_INST_TYPE, "topic": "ticker", "symbol": contract.name},
+                    {"instType": WS_INST_TYPE, "topic": "books", "symbol": contract.name},
+                    {"instType": WS_INST_TYPE, "topic": "candle1m", "symbol": contract.name},
                 ],
             })
 
@@ -497,9 +503,9 @@ class MdApi(WebsocketClient):
         self.ticks[req.symbol] = tick
 
         self.new_channels.extend([
-            {"instType": CATEGORY, "channel": "ticker", "instId": contract.name},
-            {"instType": CATEGORY, "channel": "books", "instId": contract.name},
-            {"instType": CATEGORY, "channel": "candle1m", "instId": contract.name},
+            {"instType": WS_INST_TYPE, "topic": "ticker", "symbol": contract.name},
+            {"instType": WS_INST_TYPE, "topic": "books", "symbol": contract.name},
+            {"instType": WS_INST_TYPE, "topic": "candle1m", "symbol": contract.name},
         ])
 
     def subscribe_new_channels(self) -> None:
@@ -514,8 +520,8 @@ class MdApi(WebsocketClient):
             return
 
         arg: dict = packet.get("arg", {})
-        channel: str = arg.get("channel", "")
-        inst_id: str = arg.get("instId", "")
+        channel: str = arg.get("topic", "")
+        inst_id: str = arg.get("symbol", "")
 
         contract = self.gateway.get_contract_by_name(inst_id)
         if not contract:
@@ -528,18 +534,21 @@ class MdApi(WebsocketClient):
         if not data:
             return
         item: dict = data[0]
+        # v3: ts is at packet level, not inside data item
+        ts: int = int(packet.get("ts", item.get("ts", 0)) or 0)
 
         if channel == "ticker":
-            tick.volume = float(item.get("baseVolume", 0) or 0)
-            tick.turnover = float(item.get("quoteVolume", 0) or 0)
-            tick.open_price = float(item.get("open24h", 0) or 0)
-            tick.high_price = float(item.get("high24h", 0) or 0)
-            tick.low_price = float(item.get("low24h", 0) or 0)
-            tick.last_price = float(item.get("last", 0) or 0)
-            tick.datetime = generate_datetime(int(item.get("ts", 0)))
+            tick.volume = float(item.get("volume24h", 0) or 0)
+            tick.turnover = float(item.get("turnover24h", 0) or 0)
+            tick.open_price = float(item.get("openPrice24h", 0) or 0)
+            tick.high_price = float(item.get("highPrice24h", 0) or 0)
+            tick.low_price = float(item.get("lowPrice24h", 0) or 0)
+            tick.last_price = float(item.get("lastPrice", 0) or 0)
+            tick.datetime = generate_datetime(ts)
         elif channel == "books":
-            asks: list = item.get("asks", [])
-            bids: list = item.get("bids", [])
+            # v3: a=asks [[price,size],...], b=bids [[price,size],...]
+            asks: list = item.get("a", [])
+            bids: list = item.get("b", [])
             if bids:
                 tick.bid_price_1 = float(bids[0][0])
                 tick.bid_volume_1 = float(bids[0][1])
@@ -602,11 +611,12 @@ class TradeApi(WebsocketClient):
         self.init(REAL_PRIVATE_HOST, proxy_host, proxy_port, receive_timeout=WEBSOCKET_TIMEOUT)
         self.start()
 
-    def _make_sign(self) -> str:
+    def _make_sign(self) -> tuple[str, str]:
         ts = str(int(time.time() * 1000))
-        return base64.b64encode(
+        sig = base64.b64encode(
             hmac.new(self.secret.encode(), ts.encode(), hashlib.sha256).digest()
-        ).decode(), ts
+        ).decode()
+        return sig, ts
 
     def on_connected(self) -> None:
         self.gateway.write_log("Trade API connected")
@@ -743,22 +753,26 @@ class TradeApi(WebsocketClient):
         self.gateway.on_order(order)
 
         order_type, force = ORDERTYPE_VT2BITGET[req.type]
+        # 按合约规格取整价格和数量
+        price_str: str = format_float(round(req.price / contract.pricetick) * contract.pricetick)
+        qty_str: str = format_float(round(req.volume / contract.min_volume) * contract.min_volume)
+
         params: dict = {
             "category": CATEGORY,
             "symbol": contract.name,
             "side": DIRECTION_VT2BITGET[req.direction],
-            "posSide": DIRECTION_VT2BITGET[req.direction],  # v3 required in hedge mode
+            "posSide": POSSIDE_VT2BITGET[req.direction],
             "orderType": order_type,
             "timeInForce": force,
-            "qty": format_float(req.volume),
+            "qty": qty_str,
             "clientOid": orderid,
-            "price": format_float(req.price) if req.type != OrderType.MARKET else "",
         }
 
         if req.type == OrderType.MARKET:
             params["orderType"] = "market"
-            params["timeInForce"] = "gtc"
-            del params["price"]
+            params.pop("timeInForce", None)
+        else:
+            params["price"] = price_str
 
         self.reqid += 1
         self.reqid_callback_map[self.reqid] = self._on_send_order
